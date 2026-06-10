@@ -6,8 +6,8 @@ resource "azurerm_resource_group" "rg" {
 
 # Network Foundation
 module "network" {
-  source  = "Azure/avm-res-network-virtualnetwork/azurerm"
-  version = "0.17.1"
+  source           = "Azure/avm-res-network-virtualnetwork/azurerm"
+  version          = "0.17.1"
   enable_telemetry = false
 
   name          = "vnet-phonebook-${var.environment}"
@@ -17,7 +17,7 @@ module "network" {
 
   subnets = {
     db = {
-      name             = "snet-phonebook-${var.environment}-db"
+      name           = "snet-phonebook-${var.environment}-db"
       address_prefix = cidrsubnet(var.vnet-addr-space[0], 8, 0)
 
       service_endpoints_with_location = [
@@ -38,7 +38,7 @@ module "network" {
     }
 
     backend = {
-      name             = "snet-phonebook-${var.environment}-backend"
+      name           = "snet-phonebook-${var.environment}-backend"
       address_prefix = cidrsubnet(var.vnet-addr-space[0], 8, 1)
 
       delegations = [
@@ -53,7 +53,7 @@ module "network" {
     }
 
     frontend = {
-      name             = "snet-phonebook-${var.environment}-frontend"
+      name           = "snet-phonebook-${var.environment}-frontend"
       address_prefix = cidrsubnet(var.vnet-addr-space[0], 8, 2)
     }
   }
@@ -80,7 +80,7 @@ module "db" {
   storage_account_name   = "saphonebookimages${var.environment}"
   storage_container_name = "uploads"
 
-  depends_on = [ module.network ]
+  depends_on = [module.network]
 }
 
 # Backend
@@ -90,7 +90,7 @@ module "backend" {
 
   resource_group_name = azurerm_resource_group.rg.name
   location            = azurerm_resource_group.rg.location
-  service_plan_sku = "B1"
+  service_plan_sku    = "B1"
 
   # environment = var.environment
 
@@ -112,7 +112,7 @@ module "backend" {
   storage_account_name   = module.db.storage_account_name
   storage_container_name = module.db.storage_container_name
 
-  depends_on = [ module.db ]
+  depends_on = [module.db]
 }
 
 
@@ -156,6 +156,120 @@ module "frontend" {
 
   security_rules = var.security_rules_frontend
 
-  depends_on = [ module.backend ]
+  depends_on = [module.backend]
 
 } 
+
+resource "azurerm_log_analytics_workspace" "law" {
+  name = "law-phonebook"
+  location = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+
+
+}
+resource "azurerm_monitor_diagnostic_setting" "db-diagnostic" {
+  name = "ds-phonebook-${var.environment}-db"
+  target_resource_id = module.db.postgres_server_id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  enabled_log {
+    category = "PostgreSQLLogs"
+    }
+
+ enabled_metric {
+   category = "AllMetrics"
+ }
+}
+
+resource "azurerm_monitor_diagnostic_setting" "sa-diagnostic" {
+  name = "ds-phonebook-${var.environment}-storage"
+  target_resource_id = module.db.storage_account_id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  enabled_metric {
+    category = "Capacity"
+  }
+
+  enabled_metric {
+    category = "Transaction"
+  }
+
+}
+
+resource "azurerm_monitor_diagnostic_setting" "container-diagnostic" {
+  name = "ds-phonebook-${var.environment}-storage-container"
+  target_resource_id =  "${module.db.storage_account_id}/blobServices/default"
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  enabled_log {category = "StorageRead"}
+  enabled_log {category = "StorageWrite"}
+  enabled_log {category = "StorageDelete"}
+  enabled_metric {category = "Transaction"}
+
+}
+
+resource "azurerm_monitor_diagnostic_setting" "app-service-diagnostic" {
+  name = "ds-phonebook-${var.environment}-backend"
+  target_resource_id = module.backend.web_app_id
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.law.id
+
+  enabled_log {
+    category = "AppServiceHTTPLogs"
+  }
+
+  enabled_log {
+    category = "AppServiceConsoleLogs"
+  }
+
+  enabled_log {
+    category = "AppServiceAppLogs"
+  }
+
+  enabled_metric {
+    category = "AllMetrics"
+  }
+
+}
+
+resource "azurerm_monitor_action_group" "ag" {
+  name = "ag-phonebook-${var.environment}"
+  resource_group_name = azurerm_resource_group.rg.name
+  short_name = "phonebook"
+
+  email_receiver {
+    name = "Smit Bhansali"
+    email_address = "smit.bhansali@simformsolutions.com"
+    }
+}
+
+resource "azurerm_monitor_metric_alert" "backend_http_5xx" {
+  name                = "alert-backend-http-5xx"
+  resource_group_name = azurerm_resource_group.rg.name
+
+  scopes = [
+    module.backend.web_app_id
+  ]
+
+  description = "Backend HTTP 5xx error count is high"
+
+  severity    = 2
+  frequency   = "PT5M"
+  window_size = "PT5M"
+
+  criteria {
+    metric_namespace = "Microsoft.Web/sites"
+
+    metric_name = "Http5xx"
+
+    # Total aggregates the sum of all 5xx errors during the window
+    aggregation = "Total"
+
+    operator  = "GreaterThan"
+    # Adjust this threshold based on your acceptable error tolerance
+    threshold = 2
+  }
+
+  action {
+    action_group_id = azurerm_monitor_action_group.ag.id
+  }
+}
