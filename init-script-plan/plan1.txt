@@ -1,0 +1,10 @@
+1. ssh into jump VM {ssh -i <private-key-file> user@<ip>}
+
+2. Install PostgreSQL on the jump VM. 
+{sudo apt update
+sudo apt install postgresql postgresql-contrib
+}
+
+3. Migration?
+
+
